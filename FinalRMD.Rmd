@@ -1,0 +1,255 @@
+---
+title: "Unsupervised Learning Project"
+author: "Austin Grosel"
+date: "February 8, 2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(EBImage)
+library(dplyr)
+```
+
+## Outline
+
+* [Introduction](#introduction)
+* [Data Exploration](#data-exploration)
+* [Custom Functions](#custom-functions)
+    + [Remove Axes](#remove-axes)
+    + [Initialize Image](#initialize-image)
+    + [Populate Image](#populate-image)
+* [Main Program](#start)
+    + [Part 1: Dynamic Drawing Data Clustering](#start)
+    + [Part 2: Dynamic vs. Static Drawings](#dynamic-versus-static)
+* [Future Considerations](#future-considerations)
+
+_R packages used: EBImage and dplyr_
+
+## Introduction {#introduction}
+
+For this unsupervised learning project, I first loaded in the different drawing files from the Parkinson_HW folder:
+
+```{r load, include=FALSE}
+# list.files is from the EBImage package
+filenames <- list.files("/Users/austingrosel/Desktop/A&F/PARKINSON_HW/hw_drawings/Dynamic Spiral Test", pattern="*.png", full.names=TRUE)
+```
+
+When determining which unsupervised learning method to use, I decided I would create a __clustering__ algorithm. In this clustering algorithm, the dynamic drawings would fall into two groups, with the hope of one group would be mostly non-Parkinson's drawings and the other to be mostly Parkinson's drawings. For deciding on what clustering algorithm to choose, I decided to use a __hierarchical clustering__ method simply because it's a popular method that I've done numerous times for some of my past projects. I did not use __k-means__ because when importing these images, I decided to switch my data to binary (blue pixel = 1, white pixel = 0), and k-means is generally used with only numerical data. In my analysis, I would cycle through a few different clustering agglomeration methods to find out what clusters the images well.
+
+## Data Exploration {#data-exploration}
+
+Before going through a cluster analysis, I wanted to look at how some of the different drawings compared with one another. Cycling through each of them, I noticed that some were easy to determine they were drawn by non-Parkinson's candidates (d1, on the left below), while some drawings were probably drawn by someone with Parkinson's (d7, right).
+
+```{r plots, fig.align='center'}
+par(mfrow=c(1,2))
+plot(readImage(filenames[1]))
+plot(readImage(filenames[23]))
+```
+
+```{r plots2, include = FALSE}
+par(mfrow=c(1,1))
+```
+
+I then assigned each drawing a class based on if I thought it was drawn by someone with Parkinson's or not. While I understood that this step is not the most accurate way of determining if a person had Parkinson's, and it would increase the time it took me to complete this project, I wanted to see what my potential clustering algorithm would be capturing, and if it would help in a hypothetical supervised classification problem. My goal in the end would be to see some sort of behavior where one cluster would have a majority of Parkinson's drawings, while the other cluster would have a majority of non-Parkinson's drawings.
+
+```{r theoretical}
+# 0 assigned to non-Parkinson's, 1 assigned to Parkinson's
+observed_set = data.frame(name = gsub("/", "", substr(filenames, nchar(filenames) - 6, nchar(filenames))),  class = c(0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 1))
+knitr::kable(head(observed_set))
+```
+
+
+
+## Custom Functions {#custom-functions}
+
+The custom functions that I created below help reduce redundant and repetitive code that I used in my main program.
+
+### Remove Axes {#remove-axes}
+
+This function removes everything from the image outside (and including) the black marked axes. Because some drawings had different axes numbers, this was throwing off the clustering function's performance. A data frame with just the drawing itself (and no axes) is returned. The other function, `as.numeric.factor`, converts a factor value to a numeric value.
+
+```{r remove_axes}
+remove_axes = function(df, x_vec, y_vec) {
+  return(df[df$y > (as.numeric(y_vec[1]) + 5) & df$y < (as.numeric(y_vec[2]) - 4) & df$x > (as.numeric(x_vec[1]) + 4) & df$x < (as.numeric(x_vec[2]) - 5), ])
+}
+
+as.numeric.factor <- function(x) {as.numeric(levels(x))[x]}
+
+```
+
+### Initialize Image {#initialize-image}
+
+This function initializes the image from the file name and returns a data frame with every row being a pixel of the image and the columns of the x,y coordinates along with their RGB values.
+
+```{r initialize_image_df}
+initialize_image_df = function(filename) {
+  # Read in the image file
+  x = readImage(filename)
+  
+  # Get the dimensions of the data
+  dimension = dim(x)
+  
+  # Get the x,y coordinates and the RGB values into a dataframe
+  # Each row represents a pixel
+  x_rgb <- data.frame(
+      x = rep(1:dimension[2], each = dimension[1]),
+      y = rep(dimension[1]:1, dimension[2]),
+      R = as.vector(x[,,1]),
+      G = as.vector(x[,,2]),
+      B = as.vector(x[,,3])
+  )
+  return(x_rgb)
+}
+```
+
+### Populate Image {#populate-image}
+
+This function appends a column to a data frame containing each pixel's blue color value at a certain pair of coordinates (either a 0 or 1). In the end, the binary data frame returned contains the same number of columns as the number of file names in the input.
+
+```{r populate_image_df}
+populate_image_df = function(filenames, rows) {
+  # Create an empty dataframe with one row per pixel and 25 columns
+  d = data.frame(matrix(NA, nrow = rows, ncol = length(filenames)))
+  # This will be transposed later on to 25 rows with many columns
+  
+  i = 1
+  for(f in filenames) {
+    x1_rgb = initialize_image_df(f)
+    
+    # Create an all "black" variable and "only_blue" variable for pixels that are all black or only blue
+    x1_rgb$only_blue = ifelse(x1_rgb$B == 1 & x1_rgb$G == 0 & x1_rgb$R == 0, 1, 0)
+    
+    # This removes the axes and tick marks based on which x,y coordinates have the longest black lines in the image.
+    x1_rgb = remove_axes(x1_rgb, x_vec, y_vec)
+    
+    # Paste the blue pixel values of the drawings into each column
+    d[,i] = x1_rgb$only_blue
+    
+    # Change the column name to the image's name
+    colnames(d)[i] = substr(filenames[i], nchar(filenames[i]) - 6, nchar(filenames[i]))
+    colnames(d)[i] = gsub("/", "", colnames(d)[i])
+    i = i + 1
+  }
+  
+  return(d)
+}
+```
+
+
+## Part 1: Dynamic Drawing Data Clustering {#start}
+
+In this first part, I wanted to find the x and y values that corresponded to the border of the axes to avoid using too many "magic" numbers in my code. The variables x_vec and y_vec are a sorted vectors where the first two numbers contain the coordinate of where the axes border is located. These values will be used later on when we're chopping off the axes borders from each of the images.
+
+```{r dimensions}
+# Initialize the first image
+x1_rgb = initialize_image_df(filenames[1])
+
+# Find where the pixels are strictly black
+x1_rgb$black = ifelse(x1_rgb$B == 0 & x1_rgb$G == 0 & x1_rgb$R == 0, 1, 0)
+
+# Get and sort the x and y values that contain the most frequent black pixel value.
+x1_black = x1_rgb[x1_rgb$black == 1,]
+x_vec = as.data.frame(table(x1_black$x))
+x_vec = as.numeric.factor(x_vec[order(-x_vec$Freq),]$Var1)
+y_vec = as.data.frame(table(x1_black$y))
+y_vec = as.numeric.factor(y_vec[order(-y_vec$Freq),]$Var1)
+
+# Chop off the axes borders and take note of how many pixels are left.
+x1_rgb = remove_axes(x1_rgb, x_vec, y_vec)
+rows = nrow(x1_rgb)
+```
+
+Now that we have the amount of pixels needed to keep track of, I went ahead and populated a data frame with each column corresponding to the blue value at each pixel. If an all blue pixel was seen at a certain pair of coordinates, it'd be marked as 1. Otherwise, it'd be marked as 0.
+
+```{r create_df}
+image_df = populate_image_df(filenames, rows)
+```
+
+### Clustering Comparisons {#clustering-comparisons}
+
+This next part is where I started the clustering algorithm. Overall, I chose three different agglomeration methods to see which would generally produce the best clustering results. The criterion I was looking for was the following: first, I wanted a relatively large discrepancy between a cluster having (my prediction of) Parkinson's and non-Parkinson's. For this measure of discrepancy, I took the difference of the two cluster means. The ideal, best case difference of cluster means would be 1 (one cluster has all of the Parkinson's drawings, the other has none), and the worst case difference would be 0 (both clusters have a 50/50 split of Parkinson's vs. non-Parkinson's)  Second, I wanted the images to be dispersed between the two clusters relatively well. I would reject any algorithm that would give me one cluster with 1 or 2 images and the rest in the other cluster because I believe around half of these images would be classified as Parkinson's.
+
+```{r clustering, fit.align = 'center'}
+# I chose to vary the method between Ward's method, single linkage, and complete linkage.
+for(method in c("ward.D", "complete", "single")) {
+  # Transposed and converted the data into a dataframe
+  t_image_df = t(image_df)
+  t_image_df = data.frame(t_image_df)
+  
+  # Since we're dealing with 1's and 0's, the distance between each of the images was set to binary
+  distance = dist(t_image_df, method = "binary")
+  
+  # Here's where I started the hierachical clustering.
+  fit <- hclust(distance, method = method) 
+  # The fit was plotted and a border assigning cluster boundary was drawn
+  plot(fit, main = paste("Clustering Method:", toupper(method)))
+  groups <- cutree(fit, k=2)
+  rect.hclust(fit, k=2, border="red")
+  
+  # This line creates a data frame of the predicted groups and the "theoretical" (or observed) classes for each   image. The class column holds the values I assigned manually from the observed_set data frame.
+  groups_df = data.frame(groups, class = observed_set$class)
+
+  print(groups_df %>% group_by(groups) %>% summarise(mean = mean(class), amt = n()))
+  
+  # Wrtie the unsupervised output to a CSV
+  df = data.frame(groups, Drawing = gsub(".png", "", rownames(data.frame(groups))))
+  df$Drawing = as.numeric(gsub("d", "", df$Drawing))
+  df = df[order(df$Drawing),]
+  df$Drawing = paste0("d", df$Drawing)
+  df$Unsupervised_Group = ifelse(df$groups == 1, "A", "B")
+  rownames(df) = NULL
+  df$groups = NULL
+  write.csv(df, paste0("ClusterOutput_", method, ".csv"), row.names = FALSE)
+}
+
+```
+
+Looking at the drawings above, I decided to use the __Ward's method__ as my final clustering algorithm because it met my initial criterion more than the other two methods. The split of observed classes between the two groups was larger than complete linkage (0.117 for Ward's vs. 0.056 for complete), and the single linkage did a poor job of clustering the drawings into two relatively even sized clusters. Therefore, I now had to test this algorithm using the static drawing data to see if it could discern between static and dynamic drawings.
+
+
+## Part 2: Comparing Against Static Drawing Data {#dynamic-versus-static}
+
+```{r other_docs}
+# Read in the static drawing folder files
+filenames2 <- list.files("/Users/austingrosel/Desktop/A&F/PARKINSON_HW/hw_drawings/Static Spiral Test", pattern="*.png", full.names=TRUE)
+
+# Append the new file names to the filenames vector
+filenames = c(filenames, filenames2)
+
+# Populate the image matrix
+image_df = populate_image_df(filenames, rows)
+
+# Transpose the data
+t_image_df = t(image_df)
+t_image_df = data.frame(t_image_df)
+
+# Calculate the distance for the clusters on each other
+distance = dist(t_image_df, method = "binary")
+
+# Create the clustering algorithm
+fit <- hclust(distance, method = "ward.D") 
+plot(fit)
+groups <- cutree(fit, k=2)
+rect.hclust(fit, k=2, border="red")
+
+# Test to see if there's a significant difference between the clusters.
+# An 's' is labeled if the drawing is static, and 'd' for dynamic.
+# Ideally, we'd like one class to have 25 's', 0 'd' and vise versa for the other cluster.
+# The worst outcome would to have 50% of s and d in one cluster, and 50% of each in the other cluster.
+test = data.frame(file = rownames(t_image_df), class = substr(rownames(t_image_df), 0, 1),pred = groups-1)
+
+test %>% group_by(pred, class) %>% summarise(n())
+
+```
+
+Overall, we see that the clusters do a relatively good job dividing the images separately. The first group (group 0) is made up of about 63% of dynamic drawings, while the second group (group 1) is made up of 80% of static drawings. The size of the clusters (35 to 15) is relatively disappointing, but there aren't going to be perfect clusters unfortunately, especially when it's hard to discern some photos even with a human eye.
+
+## Future Considerations {#future-considerations}
+
+While the results weren't perfect, I feel like this algorithm is a step in the right direction of classifying different drawings. The main challenge of this exercise was discerning the images based on the _way_ they were drawn and not the _structure_ of the drawing. 
+
+Something that I noticed was that my algorithm was much better at comparing two images when they had similar shapes, regardless if a drawing had jagged lines, which would probably point to a candidate having Parkinson's. I did look into seeing if there was a way to improve this method. I first tried to get a _segment_ of the drawing so we could compare simply a small path. Theoretically, we could see if this line was straight or jagged, which may make the analysis better. However, because so many of these images started and ended in different locations on the graph, this caused even more problems. An ideal solution would be to conduct an experiment with an identical start and end point in each of the drawings.
+
